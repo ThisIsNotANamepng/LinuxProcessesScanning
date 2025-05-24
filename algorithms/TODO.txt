@@ -1,0 +1,6 @@
+- Research ways to continually generate data on Linux processes to train future models
+- Compare all of the different algorithm
+- Research how we can stream live process data to the model
+- Use threading?
+- Find out the flase negative/positive rate, which types are being predicted wrong
+- Right now all of the algorithms just predict as benign/malicious, make them also predict which type of attack is happening. The same model doesn't have to be used for both, one can predict as benign/malicious and one can predict which attack is being used if its that better
