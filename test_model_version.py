@@ -1,5 +1,9 @@
-import joblib
+from baseline_model import load_model_artifact
 
 
-loaded_model = joblib.load("ProcessAnalyses.pkl")
-print(loaded_model.version)  # "1.0.3"
+artifact = load_model_artifact()
+metadata = artifact["metadata"]
+print(metadata.get("version", "unknown"))
+print(metadata.get("model_type", "unknown"))
+print(metadata.get("trained_at", "unknown"))
+print(metadata.get("threshold", "unknown"))

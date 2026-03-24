@@ -1,10 +1,9 @@
 import pandas as pd
-from sklearn.preprocessing import LabelEncoder
-from sklearn.metrics import accuracy_score
-import joblib
 import psutil
 import os
 import time
+
+from baseline_model import load_model_artifact
 
 
 def get_tslpi(pid):
@@ -84,96 +83,91 @@ def get_trun(pid):
 
 
 
-
-# Load the trained model
-rf_classifier = joblib.load('ProcessAnalyses.pkl')
+artifact = load_model_artifact()
+rf_classifier = artifact["model"]
+metadata = artifact["metadata"]
+feature_columns = metadata["feature_columns"]
+threshold = float(os.getenv("PROCESS_SCAN_THRESHOLD", metadata.get("threshold", 0.5)))
+max_alerts = int(os.getenv("PROCESS_SCAN_MAX_ALERTS", "25"))
 
 
 # Columns: ['TRUN', 'TSLPI', 'TSLPU', 'POLI', 'NICE', 'PRI', 'RTPR', 'CPUNR', 'Status', 'State', 'CPU', 'CMD', 'label']
 
-# Get the current processes
-pids = ["padding"]
 
+scan_started = time.perf_counter()
+process_metadata = []
 processes = []
-for proc in psutil.process_iter(['pid', 'name', 'status', 'create_time', 'memory_percent', 'cpu_percent']):
+for proc in psutil.process_iter(['pid', 'name', 'status', 'cpu_percent']):
     try:
-        # Get process details as a dictionary
         info = proc.info
-
         pid = info['pid']
-        pids.append(pid)
 
-        # RTPR and POLI
         poli = os.sched_getscheduler(pid)
-        ## In the dataset this is either 'norm' or 0, in practice its always 0
-        param  = os.sched_getparam(pid)
+        param = os.sched_getparam(pid)
         rtpr = param.sched_priority
-
-        # TSLPI and TSLPU
-
         tslpi = get_tslpi(pid)
         tslpu = get_tslpu(pid)
-
-        # State
-
-        ## State of E is not a standard state, read paper to see what it is, right now it's mapped to dead (X)
         state = get_process_state(pid).upper()
-
-        # TRUN
         trun = get_trun(pid)
+        nice = proc.nice()
 
-        
-        processes.append({
-            'TRUN': trun,
-            'TSLPI': tslpi,
-            'TSLPU': tslpu,
-            'POLI': poli,
-            'NICE': proc.nice(),
-            'PRI': 20 + proc.nice() + 100,
-            'RTPR': rtpr,
-            'Status': info['status'],
-            'State': state,
-            'CPU': info['cpu_percent'],
-            'CMD': info['name']
-        })
-    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-        pass
+        processes.append(
+            {
+                'TRUN': trun,
+                'TSLPI': tslpi,
+                'TSLPU': tslpu,
+                'POLI': poli,
+                'NICE': nice,
+                'PRI': 20 + nice + 100,
+                'RTPR': rtpr,
+                'Status': info['status'],
+                'State': state,
+                'CPU': info['cpu_percent'],
+                'CMD': info['name'],
+            }
+        )
+        process_metadata.append({'pid': pid, 'name': info['name']})
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, ProcessLookupError):
+        continue
 
-# Create a DataFrame from the processes
-test_data = pd.DataFrame(processes)
+if not processes:
+    raise SystemExit("No readable processes were collected.")
 
-# Preprocess the test data (same preprocessing steps as in training)
-le = LabelEncoder()
-for col in test_data.columns:
-    if test_data[col].dtype == 'object':
-        test_data[col] = le.fit_transform(test_data[col])
-
-X_test = test_data
-y_test = [0] * len(X_test)  # Target variable (all benign)
-
-# Make predictions on the test data
-y_pred = rf_classifier.predict(X_test)
-
-
-threshold = 0.6
-y_proba = rf_classifier.predict_proba(X_test)
+test_data = pd.DataFrame(processes).reindex(columns=feature_columns)
+y_proba = rf_classifier.predict_proba(test_data)
 
 malicious = 0
 benign = 0
-total = 0
+findings = []
 
-for i, probs in enumerate(y_proba):
-    total +=1
-
-    prob_malicious = probs[1]  # Probability of class 1
+for process_info, probs in zip(process_metadata, y_proba):
+    prob_malicious = probs[1]
     pred_class = 1 if prob_malicious >= threshold else 0
 
     if pred_class == 1:
-        print(f"Process pid: {pids[i]} is malicious (confidence: {prob_malicious:.2f})")
-
+        findings.append(
+            {
+                'pid': process_info['pid'],
+                'name': process_info['name'],
+                'confidence': float(prob_malicious),
+            }
+        )
         malicious += 1
     else:
-        #print(f"Process {i} is benign (confidence: {1 - prob_malicious:.2f})")
         benign += 1
 
-print(f"Threshold: {threshold}, Malicious: {malicious}, Benign: {benign}, Total: {total}")
+findings.sort(key=lambda finding: finding['confidence'], reverse=True)
+for finding in findings[:max_alerts]:
+    print(
+        f"Process pid: {finding['pid']} ({finding['name']}) "
+        f"is malicious (confidence: {finding['confidence']:.2f})"
+    )
+
+if len(findings) > max_alerts:
+    print(f"... {len(findings) - max_alerts} additional alerts omitted")
+
+elapsed = time.perf_counter() - scan_started
+print(
+    f"Threshold: {threshold:.2f}, Malicious: {malicious}, "
+    f"Benign: {benign}, Total: {len(processes)}, Scan time: {elapsed:.3f}s"
+)

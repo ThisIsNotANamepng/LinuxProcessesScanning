@@ -1,59 +1,39 @@
-# Creates model and tests it base don linux processes
-import pandas as pd
-from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.preprocessing import LabelEncoder
-from sklearn.metrics import accuracy_score
-import joblib
 import time
 
-start=time.time()
-# Load the data
-df = pd.read_csv('CombinedSets.csv')
+from baseline_model import ARTIFACT_PATH, train_and_save_baseline_model
 
-#df = df.drop('type', axis=1)
-cols_to_drop = [
-    'ts',
-    'EXC',
-    'type',
-    'CPUNR',
-    'PID',
-]
 
-## psutil can't get POLI, RTPR, TSLPI, or TSLPU but you can get it another way (see chatgpt)
+def main() -> None:
+    start = time.time()
+    artifact = train_and_save_baseline_model()
+    metadata = artifact["metadata"]
+    validation_metrics = metadata["metrics"]["validation"]
+    test_metrics = metadata["metrics"]["test"]
 
-df.drop(columns=cols_to_drop, inplace=True)
+    print(f"Saved model artifact to {ARTIFACT_PATH}")
+    print(f"Model version: {metadata['version']}")
+    print(f"Selected threshold: {metadata['threshold']:.2f}")
+    print(
+        "Validation metrics: "
+        f"accuracy={validation_metrics['accuracy']:.4f}, "
+        f"precision={validation_metrics['precision']:.4f}, "
+        f"recall={validation_metrics['recall']:.4f}, "
+        f"f1={validation_metrics['f1']:.4f}, "
+        f"pr_auc={validation_metrics['pr_auc']:.4f}, "
+        f"roc_auc={validation_metrics['roc_auc']:.4f}"
+    )
+    print(
+        "Test metrics: "
+        f"accuracy={test_metrics['accuracy']:.4f}, "
+        f"precision={test_metrics['precision']:.4f}, "
+        f"recall={test_metrics['recall']:.4f}, "
+        f"f1={test_metrics['f1']:.4f}, "
+        f"pr_auc={test_metrics['pr_auc']:.4f}, "
+        f"roc_auc={test_metrics['roc_auc']:.4f}"
+    )
+    print(f"Test confusion matrix: {test_metrics['confusion_matrix']}")
+    print(f"Time taken: {time.time() - start:.2f}s")
 
-#print("Columns:", df.columns.tolist())
 
-# Split data into features and target variable
-X = df.iloc[:, :-1]  # Features (all columns except the last one)
-y = df.iloc[:, -1]   # Target variable (last column)
-
-#print(X.head())
-
-# Encode categorical variables
-le = LabelEncoder()
-for col in X.columns:
-    if X[col].dtype == 'object':
-        X[col] = le.fit_transform(X[col])
-
-# Split data into train and test sets
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1, random_state=42)
-
-# Initialize Random Forest classifier
-rf_classifier = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
-
-# Train the classifier
-rf_classifier.fit(X_train, y_train)
-
-# Predict on the test set
-y_pred = rf_classifier.predict(X_test)
-
-# Evaluate the model
-accuracy = accuracy_score(y_test, y_pred)
-print("Accuracy:", accuracy)
-
-print("Time taken:  ", time.time()-start)
-
-joblib.dump(rf_classifier, 'ProcessAnalyses.pkl')
+if __name__ == "__main__":
+    main()
