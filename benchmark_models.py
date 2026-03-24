@@ -265,7 +265,12 @@ def evaluate_candidates(profile: str, sample_frac: float, random_state: int, use
             )
             continue
 
-        validation_probabilities = pipeline.predict_proba(validation_features)[:, 1]
+        if use_gpu and candidate.name.startswith("XGBoost"):
+            pipeline.named_steps["model"].set_params(device="cpu")
+            validation_probabilities = pipeline.predict_proba(validation_features)[:, 1]
+        else:
+            validation_probabilities = pipeline.predict_proba(validation_features)[:, 1]
+
         threshold, threshold_sweep = select_best_threshold(validation_target, validation_probabilities)
         test_probabilities = pipeline.predict_proba(test_features)[:, 1]
 
