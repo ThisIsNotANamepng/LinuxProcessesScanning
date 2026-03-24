@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+import warnings
 
 import joblib
 import numpy as np
@@ -27,10 +28,12 @@ from baseline_model import (
 
 try:
     from xgboost import XGBClassifier
+    from xgboost.core import XGBoostError
 
     HAS_XGBOOST = True
 except ImportError:
     HAS_XGBOOST = False
+    XGBoostError = Exception
 
 
 RESULTS_JSON_PATH = Path("benchmark_results.json")
@@ -108,7 +111,8 @@ def build_candidates(profile: str, use_gpu: bool) -> list[Candidate]:
         )
 
     if HAS_XGBOOST:
-        xgb_tree_method = "gpu_hist" if use_gpu else "hist"
+        xgb_tree_method = "hist"
+        xgb_device_kwargs: dict[str, Any] = {"device": "cuda"} if use_gpu else {}
         candidates.append(
             Candidate(
                 name="XGBoost_Edge",
@@ -121,6 +125,7 @@ def build_candidates(profile: str, use_gpu: bool) -> list[Candidate]:
                     reg_lambda=1.0,
                     eval_metric="logloss",
                     tree_method=xgb_tree_method,
+                    **xgb_device_kwargs,
                     random_state=42,
                     n_jobs=-1,
                 ),
@@ -140,6 +145,7 @@ def build_candidates(profile: str, use_gpu: bool) -> list[Candidate]:
                         reg_lambda=1.5,
                         eval_metric="logloss",
                         tree_method=xgb_tree_method,
+                        **xgb_device_kwargs,
                         random_state=42,
                         n_jobs=-1,
                     ),
@@ -224,8 +230,31 @@ def evaluate_candidates(profile: str, sample_frac: float, random_state: int, use
         )
 
         fit_started = time.perf_counter()
-        pipeline.fit(train_features, train_target)
-        fit_seconds = float(time.perf_counter() - fit_started)
+        try:
+            with warnings.catch_warnings(record=True) as captured_warnings:
+                warnings.simplefilter("always")
+                pipeline.fit(train_features, train_target)
+            fit_seconds = float(time.perf_counter() - fit_started)
+        except XGBoostError as error:
+            results.append(
+                {
+                    "model_name": candidate.name,
+                    "status": "failed",
+                    "error": str(error),
+                    "deployment_score": float("-inf"),
+                }
+            )
+            continue
+        except Exception as error:
+            results.append(
+                {
+                    "model_name": candidate.name,
+                    "status": "failed",
+                    "error": str(error),
+                    "deployment_score": float("-inf"),
+                }
+            )
+            continue
 
         validation_probabilities = pipeline.predict_proba(validation_features)[:, 1]
         threshold, threshold_sweep = select_best_threshold(validation_target, validation_probabilities)
@@ -252,6 +281,7 @@ def evaluate_candidates(profile: str, sample_frac: float, random_state: int, use
         results.append(
             {
                 "model_name": candidate.name,
+                "status": "ok",
                 "threshold": float(threshold),
                 "fit_seconds": fit_seconds,
                 "predict_batch_seconds": average_batch_seconds,
@@ -263,18 +293,21 @@ def evaluate_candidates(profile: str, sample_frac: float, random_state: int, use
                 "false_negative_rate": false_negative_rate,
                 "deployment_score": score,
                 "threshold_sweep": threshold_sweep,
+                "warnings": [str(warning.message) for warning in captured_warnings],
             }
         )
 
     ranked_results = sorted(results, key=lambda item: item["deployment_score"], reverse=True)
+    successful = [result for result in ranked_results if result.get("status") == "ok"]
     return {
         "summary": {
             "candidate_count": len(ranked_results),
+            "successful_count": len(successful),
             "profile": profile,
             "sample_frac": sample_frac,
             "use_gpu": use_gpu,
             "ranking_metric": "deployment_score = quality(pr_auc,f1,recall) - latency_penalty - size_penalty",
-            "best_model": ranked_results[0]["model_name"] if ranked_results else None,
+            "best_model": successful[0]["model_name"] if successful else None,
         },
         "results": ranked_results,
     }
@@ -285,10 +318,21 @@ def save_results(report: dict[str, Any]) -> None:
 
     flattened_rows: list[dict[str, Any]] = []
     for result in report["results"]:
+        if result.get("status") != "ok":
+            flattened_rows.append(
+                {
+                    "model_name": result["model_name"],
+                    "status": "failed",
+                    "error": result.get("error", "unknown"),
+                }
+            )
+            continue
+
         test_metrics = result["test_metrics"]
         flattened_rows.append(
             {
                 "model_name": result["model_name"],
+                "status": "ok",
                 "deployment_score": result["deployment_score"],
                 "threshold": result["threshold"],
                 "fit_seconds": result["fit_seconds"],
@@ -311,17 +355,25 @@ def save_results(report: dict[str, Any]) -> None:
 
 def print_summary(report: dict[str, Any]) -> None:
     print(f"Candidates evaluated: {report['summary']['candidate_count']}")
+    print(f"Candidates successful: {report['summary']['successful_count']}")
     print(f"Profile: {report['summary']['profile']}")
     print(f"Sample fraction: {report['summary']['sample_frac']}")
     print(f"Best model: {report['summary']['best_model']}")
     print("\nTop models:")
-    for rank, result in enumerate(report["results"][:3], start=1):
+    successful_results = [result for result in report["results"] if result.get("status") == "ok"]
+    for rank, result in enumerate(successful_results[:3], start=1):
         metrics = result["test_metrics"]
         print(
             f"{rank}. {result['model_name']} | score={result['deployment_score']:.4f} | "
             f"pr_auc={metrics['pr_auc']:.4f} | f1={metrics['f1']:.4f} | "
             f"latency={result['predict_per_sample_ms']:.6f}ms/sample | size={result['artifact_size_mb']:.2f}MB"
         )
+
+    failed_results = [result for result in report["results"] if result.get("status") == "failed"]
+    if failed_results:
+        print("\nFailed candidates:")
+        for result in failed_results:
+            print(f"- {result['model_name']}: {result.get('error', 'unknown error')}")
 
     print(f"\nWrote: {RESULTS_JSON_PATH}")
     print(f"Wrote: {RESULTS_CSV_PATH}")
