@@ -30,3 +30,13 @@ Righ now using features which I can read with python and are in the dataset and 
 - Context switches: p.num_ctx_switches() (voluntary/involuntary)
 
 This means that I would have to make a new dataset. For now I'll just use the existing, but I want to also look into making my own in the future, maybe with cyber club
+
+
+### FLorida experiments
+
+I have a script to gather process logs, I have an environment to safely run malware (not at scale), now I just need a way to label the gathered processes as malicious or benign
+
+
+## Notes
+
+A lot of malware mines crypto, but the user might also just be mining benignly, maybe have a switch to detect whether crypto is being mined

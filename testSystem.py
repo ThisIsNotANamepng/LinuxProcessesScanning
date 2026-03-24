@@ -92,6 +92,8 @@ rf_classifier = joblib.load('ProcessAnalyses.pkl')
 # Columns: ['TRUN', 'TSLPI', 'TSLPU', 'POLI', 'NICE', 'PRI', 'RTPR', 'CPUNR', 'Status', 'State', 'CPU', 'CMD', 'label']
 
 # Get the current processes
+pids = ["padding"]
+
 processes = []
 for proc in psutil.process_iter(['pid', 'name', 'status', 'create_time', 'memory_percent', 'cpu_percent']):
     try:
@@ -99,14 +101,13 @@ for proc in psutil.process_iter(['pid', 'name', 'status', 'create_time', 'memory
         info = proc.info
 
         pid = info['pid']
+        pids.append(pid)
 
         # RTPR and POLI
         poli = os.sched_getscheduler(pid)
         ## In the dataset this is either 'norm' or 0, in practice its always 0
         param  = os.sched_getparam(pid)
         rtpr = param.sched_priority
-
-        #print(poli, rtpr)
 
         # TSLPI and TSLPU
 
@@ -154,21 +155,25 @@ y_test = [0] * len(X_test)  # Target variable (all benign)
 y_pred = rf_classifier.predict(X_test)
 
 
-threshold = 0.6  # Change to any threshold you like
+threshold = 0.6
 y_proba = rf_classifier.predict_proba(X_test)
 
 malicious = 0
 benign = 0
+total = 0
 
 for i, probs in enumerate(y_proba):
+    total +=1
+
     prob_malicious = probs[1]  # Probability of class 1
     pred_class = 1 if prob_malicious >= threshold else 0
 
     if pred_class == 1:
-        print(f"Process {i} is malicious (confidence: {prob_malicious:.2f})")
+        print(f"Process pid: {pids[i]} is malicious (confidence: {prob_malicious:.2f})")
+
         malicious += 1
     else:
-        print(f"Process {i} is benign (confidence: {1 - prob_malicious:.2f})")
+        #print(f"Process {i} is benign (confidence: {1 - prob_malicious:.2f})")
         benign += 1
 
-print(f"Malicious: {malicious}, Benign: {benign}")
+print(f"Threshold: {threshold}, Malicious: {malicious}, Benign: {benign}, Total: {total}")
