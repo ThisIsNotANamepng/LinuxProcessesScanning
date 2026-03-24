@@ -220,7 +220,14 @@ def evaluate_candidates(profile: str, sample_frac: float, random_state: int, use
     candidates = build_candidates(profile, use_gpu)
     results: list[dict[str, Any]] = []
 
-    for candidate in candidates:
+    total_candidates = len(candidates)
+    for index, candidate in enumerate(candidates, start=1):
+        progress_pct = (index / total_candidates) * 100
+        print(
+            f"[{index}/{total_candidates}] ({progress_pct:.1f}%) "
+            f"Starting {candidate.name}"
+        )
+
         preprocessor, categorical_features, numeric_features = build_preprocessor(train_features)
         pipeline = Pipeline(
             steps=[
@@ -236,6 +243,7 @@ def evaluate_candidates(profile: str, sample_frac: float, random_state: int, use
                 pipeline.fit(train_features, train_target)
             fit_seconds = float(time.perf_counter() - fit_started)
         except XGBoostError as error:
+            print(f"[{index}/{total_candidates}] {candidate.name} failed: {error}")
             results.append(
                 {
                     "model_name": candidate.name,
@@ -246,6 +254,7 @@ def evaluate_candidates(profile: str, sample_frac: float, random_state: int, use
             )
             continue
         except Exception as error:
+            print(f"[{index}/{total_candidates}] {candidate.name} failed: {error}")
             results.append(
                 {
                     "model_name": candidate.name,
@@ -295,6 +304,13 @@ def evaluate_candidates(profile: str, sample_frac: float, random_state: int, use
                 "threshold_sweep": threshold_sweep,
                 "warnings": [str(warning.message) for warning in captured_warnings],
             }
+        )
+
+        print(
+            f"[{index}/{total_candidates}] Completed {candidate.name} | "
+            f"fit={fit_seconds:.2f}s | threshold={threshold:.2f} | "
+            f"f1={test_metrics['f1']:.4f} | pr_auc={test_metrics['pr_auc']:.4f} | "
+            f"latency={per_sample_ms:.6f}ms/sample"
         )
 
     ranked_results = sorted(results, key=lambda item: item["deployment_score"], reverse=True)
